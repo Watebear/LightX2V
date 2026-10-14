@@ -20,6 +20,7 @@ from lightx2v.server.metrics import monitor_cli
 from lightx2v.utils.envs import *
 from lightx2v.utils.profiler import *
 from lightx2v.utils.registry_factory import RUNNER_REGISTER
+from lightx2v.utils.utils import seed_all
 from lightx2v_platform.base.global_var import AI_DEVICE
 
 torch_device_module = getattr(torch, AI_DEVICE)
@@ -49,6 +50,43 @@ class Hunyuan3DShapeRunner(DefaultRunner):
             self.model.set_scheduler(self.scheduler)
         self.run_input_encoder = self._run_input_encoder_local_i23d
         self.config.lock()
+
+    @ProfilingContext4DebugL1("Warmup")
+    def run_warmup(self):
+        """Compile and execute the image-conditioned DiT before timed requests."""
+        image_path = self.config.get("warmup_image_path")
+        if not image_path or not os.path.isfile(image_path):
+            raise FileNotFoundError("Hunyuan3D shape warmup requires a local warmup_image_path")
+        input_info = self.prepare_request({"task": "i23d", "image_path": image_path, "seed": self.config.get("warmup_seed", 42)})
+        seed_all(input_info.seed)
+        self.input_info = input_info
+        try:
+            self.inputs = self.run_input_encoder()
+            latent_shape = (self.inputs["image_tensor"].shape[0], *self.vae_decoder.vae.latent_shape)
+            self.scheduler.prepare(
+                seed=input_info.seed,
+                batch_size=latent_shape[0],
+                latent_shape=latent_shape,
+            )
+            dit_inputs = {
+                "cond": self.inputs["cond"],
+                "uncond": self.inputs.get("uncond"),
+                "guidance": self.inputs.get("guidance"),
+                "guidance_scale": self.inputs["guidance_scale"],
+                "do_classifier_free_guidance": self.inputs["do_classifier_free_guidance"],
+            }
+            at = self.model.transformer_infer.fi_moe_autotune
+            with at.session(tune_mode=at.cache_rebuild_needed()):
+                self._run_infer_step(0, dit_inputs)
+            if self.scheduler.infer_steps > 1:
+                # Run the ordinary cache-only path even if step 0 rebuilt the
+                # FlashInfer MoE autotune cache.
+                with at.session(tune_mode=False):
+                    self._run_infer_step(1, dit_inputs)
+            torch_device_module.synchronize()
+            logger.info("[Warmup] Hunyuan3D shape image-conditioned DiT warmup completed")
+        finally:
+            self.end_run()
 
     @ProfilingContext4DebugL2("Load models")
     def load_model(self):

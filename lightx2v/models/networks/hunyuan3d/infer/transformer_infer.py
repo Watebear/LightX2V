@@ -26,6 +26,7 @@ class Hunyuan3DTransformerInfer(BaseTransformerInfer):
         self.use_fused_qk_rms_norm = bool(config.get("use_fused_qk_rms_norm", False))
         self.use_fused_qkv_attn = bool(config.get("use_fused_qkv_attn", False))
         self.fi_moe_autotune = MoeFiAutotune.from_hunyuan3d_config(config)
+        self.init_compile(config)
         if self.fi_moe_autotune.enabled:
             if flashinfer_autotune is None:
                 raise RuntimeError("Hunyuan3D FlashInfer MoE autotune enabled but flashinfer autotuner is not available")
@@ -246,7 +247,7 @@ class Hunyuan3DTransformerInfer(BaseTransformerInfer):
         for layer, block in enumerate(block_weights.blocks):
             skip_value = None if layer <= self.depth // 2 else skip_value_list.pop()
 
-            hidden_states = self.infer_block(block, hidden_states, cond, skip_value=skip_value)
+            hidden_states = self.run_block(layer, block, hidden_states, cond, skip_value)
             if layer < self.depth // 2:
                 skip_value_list.append(hidden_states)
         return hidden_states

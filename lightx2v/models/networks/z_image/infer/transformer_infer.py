@@ -7,6 +7,7 @@ from lightx2v.common.transformer_infer.transformer_infer import BaseTransformerI
 class ZImageTransformerInfer(BaseTransformerInfer):
     def __init__(self, config):
         self.config = config
+        self.init_compile(config)
         self.infer_conditional = True
         self.clean_cuda_cache = self.config.get("clean_cuda_cache", False)
         self.attn_type = config.get("attn_type", "flash_attn3")
@@ -209,14 +210,15 @@ class ZImageTransformerInfer(BaseTransformerInfer):
         x_hidden = hidden_states[:x_len]
         x_freqs = x_freqs_cis[:x_len]
         x_positions = x_rope_positions[:x_len] if x_rope_positions is not None else None
-        for block_weight in noise_refiner_blocks:
-            x_hidden = self.infer_block(
-                block_weight=block_weight,
-                hidden_states=x_hidden,
-                freqs_cis=x_freqs,
-                rope_positions=x_positions,
-                adaln_input=adaln_input,
-                image_tokens_len=x_hidden.shape[0],
+        for block_idx, block_weight in enumerate(noise_refiner_blocks):
+            x_hidden = self.run_block(
+                ("noise", block_idx),
+                block_weight,
+                x_hidden,
+                x_freqs,
+                x_positions,
+                adaln_input,
+                x_hidden.shape[0],
             )
 
         return x_hidden
@@ -232,14 +234,15 @@ class ZImageTransformerInfer(BaseTransformerInfer):
         cap_hidden = encoder_hidden_states[:cap_len]
         cap_freqs = cap_freqs_cis[:cap_len]
         cap_positions = cap_rope_positions[:cap_len] if cap_rope_positions is not None else None
-        for block_weight in context_refiner_blocks:
-            cap_hidden = self.infer_block(
-                block_weight=block_weight,
-                hidden_states=cap_hidden,
-                freqs_cis=cap_freqs,
-                rope_positions=cap_positions,
-                adaln_input=None,
-                image_tokens_len=None,
+        for block_idx, block_weight in enumerate(context_refiner_blocks):
+            cap_hidden = self.run_block(
+                ("context", block_idx),
+                block_weight,
+                cap_hidden,
+                cap_freqs,
+                cap_positions,
+                None,
+                None,
             )
 
         return cap_hidden
@@ -256,14 +259,15 @@ class ZImageTransformerInfer(BaseTransformerInfer):
         cap_len,
     ):
         unified = torch.cat([hidden_states, encoder_hidden_states], dim=0)
-        for block_weight in main_blocks:
-            unified = self.infer_block(
-                block_weight=block_weight,
-                hidden_states=unified,
-                freqs_cis=unified_freqs_cis,
-                rope_positions=unified_rope_positions,
-                adaln_input=adaln_input,
-                image_tokens_len=x_len,
+        for block_idx, block_weight in enumerate(main_blocks):
+            unified = self.run_block(
+                ("main", block_idx),
+                block_weight,
+                unified,
+                unified_freqs_cis,
+                unified_rope_positions,
+                adaln_input,
+                x_len,
             )
 
         return unified

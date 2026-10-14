@@ -46,13 +46,14 @@ class ZImageOffloadTransformerInfer(ZImageTransformerInfer):
             self.offload_manager.prefetch_weights((block_idx + 1) % num_blocks, main_blocks)
 
             with torch_device_module.stream(self.offload_manager.compute_stream):
-                unified = self.infer_block(
-                    block_weight=self.offload_manager.cuda_buffers[0],
-                    hidden_states=unified,
-                    freqs_cis=unified_freqs_cis,
-                    rope_positions=unified_rope_positions,
-                    adaln_input=adaln_input,
-                    image_tokens_len=image_tokens_len,
+                unified = self.run_block(
+                    ("main", block_idx),
+                    self.offload_manager.cuda_buffers[0],
+                    unified,
+                    unified_freqs_cis,
+                    unified_rope_positions,
+                    adaln_input,
+                    image_tokens_len,
                 )
 
             self.offload_manager.swap_blocks()

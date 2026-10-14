@@ -12,7 +12,7 @@ from lightx2v.utils.async_vae import AsyncVAEChunkDecoder
 from lightx2v.utils.envs import *
 from lightx2v.utils.profiler import *
 from lightx2v.utils.registry_factory import RUNNER_REGISTER
-from lightx2v.utils.utils import get_rank_and_world_size
+from lightx2v.utils.utils import get_rank_and_world_size, seed_all
 from lightx2v.utils.video_recorder import VideoRecorder
 from lightx2v_platform.base.global_var import AI_DEVICE
 
@@ -41,6 +41,30 @@ class WanSFRunner(WanRunner):
 
     def init_scheduler(self):
         self.scheduler = WanSFScheduler(self.config)
+
+    @ProfilingContext4DebugL1("Warmup")
+    def run_warmup(self):
+        """Exercise the complete autoregressive path before timed requests.
+
+        Generic Wan warmup only visits one static segment and cannot prime
+        Self-Forcing's changing KV-cache lengths.  A full in-memory pipeline
+        pass covers all seven chunk positions and leaves no output file.
+        """
+        if self.config.get("task") != "t2v":
+            raise NotImplementedError("Self-Forcing warmup supports t2v only")
+        if self.config.get("lazy_load", False) or self.config.get("unload_modules", False):
+            raise NotImplementedError("Self-Forcing warmup requires resident model modules")
+        prompt = self.config.get("warmup_prompt")
+        if not prompt:
+            raise ValueError("Self-Forcing warmup requires warmup_prompt matching the measured request")
+        input_info = self.prepare_request({"task": "t2v", "prompt": prompt, "seed": self.config.get("warmup_seed", 42), "return_result_tensor": True})
+        seed_all(input_info.seed)
+        result = self.run_pipeline(input_info)
+        torch_device_module.synchronize()
+        del result
+        torch_device_module.empty_cache()
+        gc.collect()
+        logger.info("[Warmup] Self-Forcing autoregressive warmup completed")
 
     @ProfilingContext4DebugL1("init kv cache manager")
     def init_kv_cache_manager(self):

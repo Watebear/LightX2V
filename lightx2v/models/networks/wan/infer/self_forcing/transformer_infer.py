@@ -57,6 +57,15 @@ class WanSFTransformerInfer(WanTransformerInfer):
         self.kv_cache_size = self.kv_cache_manager.kv_size_for_layer(block_idx)
         self.max_attention_size = self.kv_cache_manager.max_attention_size_for_layer(block_idx)
 
+    def infer_block(self, ffn_phase, x, attn_out, c_shift_msa, c_scale_msa, c_gate_msa):
+        """Compile the tensor-only FFN while KV-cache mutations stay eager.
+
+        Self-Forcing's attention path updates a rolling KV cache and Python-side
+        sequence metadata for each chunk.  Compiling that path as one graph is
+        unsafe; the FFN phase is the stable portion of every transformer block.
+        """
+        return self.infer_ffn(ffn_phase, x, attn_out, c_shift_msa, c_scale_msa, c_gate_msa)
+
     def _apply_rope_sp(self, phase, q, k, grid_sizes, freqs, start_frame):
         f, h, w = grid_sizes[0].tolist()
         full_seq_len = f * h * w
@@ -190,7 +199,15 @@ class WanSFTransformerInfer(WanTransformerInfer):
             gate_msa,
         )
 
-        y = self.infer_ffn(block.compute_phases[2], x, attn_out, c_shift_msa, c_scale_msa, c_gate_msa)
+        y = self.run_block(
+            self.block_idx,
+            block.compute_phases[2],
+            x,
+            attn_out,
+            c_shift_msa,
+            c_scale_msa,
+            c_gate_msa,
+        )
 
         x = self.post_process(x, y, c_gate_msa, pre_infer_out)
         return x

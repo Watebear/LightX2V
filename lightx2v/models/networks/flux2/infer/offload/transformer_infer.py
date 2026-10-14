@@ -117,8 +117,10 @@ class Flux2OffloadTransformerInfer(Flux2TransformerInfer):
             nonlocal encoder_hidden_states, hidden_states
             self.block_idx = block_idx
             with device_module.stream(compute_stream):
-                encoder_hidden_states, hidden_states = self.infer_double_stream_block(
+                encoder_hidden_states, hidden_states = self.run_block(
+                    ("double", block_idx),
                     block,
+                    "double",
                     hidden_states,
                     encoder_hidden_states,
                     double_stream_mod_img,
@@ -141,14 +143,16 @@ class Flux2OffloadTransformerInfer(Flux2TransformerInfer):
             nonlocal hidden_states
             self.block_idx = block_idx
             with device_module.stream(compute_stream):
-                hidden_states = self.infer_single_stream_block(
+                hidden_states = self.run_block(
+                    ("single", block_idx),
                     block,
+                    "single",
                     hidden_states,
                     None,
                     single_stream_mod,
                     image_rotary_emb,
                     image_rotary_positions,
-                    num_txt_tokens=num_txt_tokens,
+                    num_txt_tokens,
                 )
 
         self._run_event_block_stage(
@@ -191,8 +195,10 @@ class Flux2OffloadTransformerInfer(Flux2TransformerInfer):
             self.offload_manager_double.prefetch_weights((block_idx + 1) % len(block_weights.double_blocks), block_weights.double_blocks)
 
             with torch_device_module.stream(self.offload_manager_double.compute_stream):
-                encoder_hidden_states, hidden_states = self.infer_double_stream_block(
+                encoder_hidden_states, hidden_states = self.run_block(
+                    ("double", block_idx),
                     self.offload_manager_double.cuda_buffers[0],
+                    "double",
                     hidden_states,
                     encoder_hidden_states,
                     double_stream_mod_img,
@@ -215,14 +221,16 @@ class Flux2OffloadTransformerInfer(Flux2TransformerInfer):
             self.offload_manager_single.prefetch_weights((block_idx + 1) % len(block_weights.single_blocks), block_weights.single_blocks)
 
             with torch_device_module.stream(self.offload_manager_single.compute_stream):
-                hidden_states = self.infer_single_stream_block(
+                hidden_states = self.run_block(
+                    ("single", block_idx),
                     self.offload_manager_single.cuda_buffers[0],
+                    "single",
                     hidden_states,
                     None,
                     single_stream_mod,
                     image_rotary_emb,
                     image_rotary_positions,
-                    num_txt_tokens=num_txt_tokens,
+                    num_txt_tokens,
                 )
 
             self.offload_manager_single.swap_blocks()

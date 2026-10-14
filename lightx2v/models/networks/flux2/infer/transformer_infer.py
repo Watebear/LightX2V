@@ -8,6 +8,7 @@ from lightx2v.common.transformer_infer.transformer_infer import BaseTransformerI
 class Flux2TransformerInfer(BaseTransformerInfer):
     def __init__(self, config):
         self.config = config
+        self.init_compile(config)
         self.infer_conditional = True
         self.clean_cuda_cache = self.config.get("clean_cuda_cache", False)
 
@@ -50,6 +51,13 @@ class Flux2TransformerInfer(BaseTransformerInfer):
 
     def set_scheduler(self, scheduler):
         self.scheduler = scheduler
+
+    def infer_block(self, block_weights, block_kind, *args):
+        if block_kind == "double":
+            return self.infer_double_stream_block(block_weights, *args)
+        if block_kind == "single":
+            return self.infer_single_stream_block(block_weights, *args)
+        raise ValueError(f"Unknown Flux2 block kind: {block_kind}")
 
     def _split_double_modulation(self, mod):
         if mod.ndim == 2:
@@ -288,28 +296,43 @@ class Flux2TransformerInfer(BaseTransformerInfer):
 
         for block_idx, block in enumerate(block_weights.double_blocks):
             block_hook = on_decisive_block if block_idx == decisive_block_id else None
-            encoder_hidden_states, hidden_states = self.infer_double_stream_block(
-                block,
-                hidden_states,
-                encoder_hidden_states,
-                double_stream_mod_img,
-                double_stream_mod_txt,
-                image_rotary_emb,
-                image_rotary_positions,
-                img_attn_hook=block_hook,
-            )
+            if block_hook is not None:
+                encoder_hidden_states, hidden_states = self.infer_double_stream_block(
+                    block,
+                    hidden_states,
+                    encoder_hidden_states,
+                    double_stream_mod_img,
+                    double_stream_mod_txt,
+                    image_rotary_emb,
+                    image_rotary_positions,
+                    img_attn_hook=block_hook,
+                )
+            else:
+                encoder_hidden_states, hidden_states = self.run_block(
+                    ("double", block_idx),
+                    block,
+                    "double",
+                    hidden_states,
+                    encoder_hidden_states,
+                    double_stream_mod_img,
+                    double_stream_mod_txt,
+                    image_rotary_emb,
+                    image_rotary_positions,
+                )
 
         hidden_states = torch.cat([encoder_hidden_states, hidden_states], dim=0)
 
-        for block in block_weights.single_blocks:
-            hidden_states = self.infer_single_stream_block(
+        for block_idx, block in enumerate(block_weights.single_blocks):
+            hidden_states = self.run_block(
+                ("single", block_idx),
                 block,
+                "single",
                 hidden_states,
                 None,
                 single_stream_mod,
                 image_rotary_emb,
                 image_rotary_positions,
-                num_txt_tokens=num_txt_tokens,
+                num_txt_tokens,
             )
         return hidden_states[num_txt_tokens:, ...]
 

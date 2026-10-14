@@ -11,10 +11,10 @@ from lightx2v.models.runners.request_fields import COMMON_REQUEST_FIELDS
 from lightx2v.models.schedulers.flux2.feature_caching.scheduler import Flux2DevSchedulerCaching, Flux2SchedulerCaching
 from lightx2v.models.schedulers.flux2.scheduler import Flux2DevScheduler, Flux2Scheduler
 from lightx2v.models.video_encoders.hf.flux2.vae import Flux2VAE
-from lightx2v.utils.input_info import Flux2I2IInputInfo
+from lightx2v.utils.input_info import Flux2I2IInputInfo, T2IInputInfo
 from lightx2v.utils.profiler import ProfilingContext4DebugL1, ProfilingContext4DebugL2
 from lightx2v.utils.registry_factory import RUNNER_REGISTER
-from lightx2v.utils.utils import is_main_process
+from lightx2v.utils.utils import is_main_process, seed_all
 from lightx2v_platform.base.global_var import AI_DEVICE
 
 torch_device_module = getattr(torch, AI_DEVICE)
@@ -29,6 +29,36 @@ class Flux2Runner(DefaultRunner):
         "t2i": COMMON_REQUEST_FIELDS | {"aspect_ratio", "prompt", "size"},
         "i2i": COMMON_REQUEST_FIELDS | {"image_path", "prompt"},
     }
+
+    @ProfilingContext4DebugL1("Warmup")
+    def run_warmup(self):
+        if self.config["task"] != "t2i":
+            raise NotImplementedError("Flux2 warmup currently supports t2i only")
+        if self.config.get("lazy_load", False) or self.config.get("unload_modules", False):
+            raise NotImplementedError("Flux2 warmup requires resident modules")
+
+        self.input_info = T2IInputInfo(
+            seed=self.config.get("warmup_seed", 0),
+            prompt=self.config.get("warmup_prompt", "warmup"),
+            negative_prompt=self.config.get("warmup_negative_prompt", " " if self.config["enable_cfg"] else ""),
+            size=list(self.config["size"]),
+            return_result_tensor=True,
+        )
+        try:
+            seed_all(self.input_info.seed)
+            self.inputs = self.run_input_encoder()
+            self.set_latent_shape()
+            self.model.scheduler.prepare(self.input_info)
+            latents, _ = self.run(total_steps=1)
+            self.run_vae_decoder(latents)
+            torch_device_module.synchronize()
+        finally:
+            self.model.pre_infer.clear_rope_cache()
+            self.model.scheduler.latents = None
+            self.model.scheduler.noise_pred = None
+            self.model.scheduler.generator = None
+            self.end_run()
+        logger.info("[Warmup] Warmup completed: Flux2 one-step inference and VAE decode")
 
     def get_supported_request_fields(self, task):
         supported_request_fields = super().get_supported_request_fields(task)

@@ -71,6 +71,45 @@ class HunyuanVideo15Runner(DefaultRunner):
         self.vae_cls = HunyuanVideo15VAE
         self.tae_cls = LightTaeHy15
 
+    @ProfilingContext4DebugL1("Warmup")
+    def run_warmup(self):
+        if self.config.get("task") != "t2v" or self.sr_version is not None:
+            raise NotImplementedError("HunyuanVideo-1.5 warmup currently supports t2v without super resolution")
+        if self.config.get("cpu_offload", False):
+            raise NotImplementedError("HunyuanVideo-1.5 warmup does not support CPU offload")
+        warmup_prompt = self.config.get("warmup_prompt")
+        if not warmup_prompt:
+            raise ValueError("HunyuanVideo-1.5 warmup requires warmup_prompt matching the inference request; text tokens are trimmed before DiT")
+
+        input_info = self.prepare_request(
+            {
+                "task": "t2v",
+                "prompt": warmup_prompt,
+                "negative_prompt": self.config.get("warmup_negative_prompt", "") if self.config.get("enable_cfg", False) else None,
+                "num_frames": self.config["num_frames"],
+                "seed": self.config.get("warmup_seed", 42),
+            }
+        )
+        self.input_info = input_info
+        scheduler = self.model.scheduler
+        try:
+            inputs = self.run_input_encoder()
+            scheduler.prepare(seed=input_info.seed, latent_shape=input_info.latent_shape, image_encoder_output=inputs["image_encoder_output"])
+            scheduler.step_pre(step_index=0)
+            self.model.infer(inputs)
+            scheduler.step_post()
+            self.run_vae_decoder(scheduler.latents)
+            torch_device_module.synchronize()
+        finally:
+            self.input_info = None
+            self.model.pre_infer.cos_sin = None
+            self.model.pre_infer.grid_sizes = (0, 0, 0)
+            for name in ("latents", "noise_pred", "cond_latents_concat", "mask_concat", "multitask_mask", "generator", "sigmas", "timesteps"):
+                if hasattr(scheduler, name):
+                    setattr(scheduler, name, None)
+            scheduler.infer_condition = True
+        logger.info("[Warmup] Warmup completed")
+
     def init_scheduler(self):
         distill_method = self.config.get("distill_method")
         feature_caching = self.config["feature_caching"]

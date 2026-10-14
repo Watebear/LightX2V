@@ -66,6 +66,7 @@ class HunyuanVideo15TransformerInfer(BaseTransformerInfer):
             self.modulate_func = fuse_scale_shift_kernel
         else:
             self.modulate_func = modulate
+        self.init_compile(config)
 
     def set_scheduler(self, scheduler):
         self.scheduler = scheduler
@@ -80,7 +81,10 @@ class HunyuanVideo15TransformerInfer(BaseTransformerInfer):
     @torch.no_grad()
     def infer_without_offload(self, weights, infer_module_out):
         for i in range(self.double_blocks_num):
-            infer_module_out.img, infer_module_out.txt = self.infer_double_block(weights.double_blocks[i], infer_module_out)
+            infer_module_out.img, infer_module_out.txt = self.run_block(i, weights.double_blocks[i], infer_module_out)
+
+    def infer_block(self, block, infer_module_out):
+        return self.infer_double_block(block, infer_module_out)
 
     @torch.no_grad()
     def infer_final_layer(self, weights, infer_module_out):

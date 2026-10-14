@@ -141,13 +141,60 @@ class LTX2Runner(DefaultRunner):
         if type(self) is not LTX2Runner:
             raise NotImplementedError(f"LTX2 warmup is not supported for {type(self).__name__}")
         task = self.config.get("task")
-        if task not in ("t2av", "i2av"):
+        if task not in ("t2av", "i2av", "ltx2_s2v"):
             raise NotImplementedError(f"LTX2 warmup does not support task: {task}")
         if self.config.get("lazy_load", False):
             raise NotImplementedError("LTX2 warmup does not support lazy_load")
 
-        self._run_warmup()
+        if task == "ltx2_s2v":
+            self._run_s2v_warmup()
+        else:
+            self._run_warmup()
         self._maybe_freeze_gc()
+
+    def _run_s2v_warmup(self):
+        """Prime the audio-conditioned path at the actual request dimensions.
+
+        The t2av/i2av synthetic inputs omit the frozen reference-audio latent
+        and therefore cannot compile the s2v graph.  Run one in-memory s2v
+        pipeline with a caller-supplied local reference audio file instead.
+        """
+        audio_path = self.config.get("warmup_audio_path")
+        if not audio_path or not os.path.isfile(audio_path):
+            raise FileNotFoundError("ltx2_s2v warmup requires a local warmup_audio_path")
+        prompt = self.config.get("warmup_prompt")
+        if not prompt:
+            raise ValueError("ltx2_s2v warmup requires warmup_prompt matching the measured request")
+        request = {
+            "task": "ltx2_s2v",
+            "audio_path": audio_path,
+            "prompt": prompt,
+            "seed": self.config.get("warmup_seed", 42),
+            "return_result_tensor": True,
+        }
+        if self.config.get("enable_cfg", False):
+            request["negative_prompt"] = self.config.get("warmup_negative_prompt", "")
+        if self.config.get("warmup_image_path"):
+            request["image_path"] = self.config["warmup_image_path"]
+        input_info = self.prepare_request(request)
+        from lightx2v.utils.utils import seed_all
+
+        result = None
+        try:
+            seed_all(input_info.seed)
+            result = self.run_pipeline(input_info)
+            torch_device_module.synchronize()
+        finally:
+            # run_main keeps the decoded video and audio on the runner after
+            # end_run.  Release the warmup output before the measured request;
+            # keep the loaded model and its compiled block cache resident.
+            result = None
+            for name in ("gen_video", "gen_audio", "gen_video_final", "gen_audio_final", "initial_video_latent", "video_denoise_mask"):
+                if hasattr(self, name):
+                    setattr(self, name, None)
+            self._clear_ltx2_reference_audio_state()
+            self.maybe_empty_cache(collect_garbage=True)
+        logger.info("[Warmup] LTX2 s2v audio-conditioned warmup completed")
 
     def _run_warmup(self):
         scheduler = self.model.scheduler

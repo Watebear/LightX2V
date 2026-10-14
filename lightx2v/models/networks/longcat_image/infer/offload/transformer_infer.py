@@ -55,8 +55,10 @@ class LongCatImageOffloadTransformerInfer(LongCatImageTransformerInfer):
             self.offload_manager_double.prefetch_weights((block_idx + 1) % len(blocks.double_blocks), blocks.double_blocks)
 
             with torch_device_module.stream(self.offload_manager_double.compute_stream):
-                encoder_hidden_states, hidden_states = self.infer_double_stream_block(
+                encoder_hidden_states, hidden_states = self.run_block(
+                    ("double", block_idx),
                     self.offload_manager_double.cuda_buffers[0],
+                    "double",
                     hidden_states,
                     encoder_hidden_states,
                     temb,
@@ -78,8 +80,10 @@ class LongCatImageOffloadTransformerInfer(LongCatImageTransformerInfer):
             self.offload_manager_single.prefetch_weights((block_idx + 1) % len(blocks.single_blocks), blocks.single_blocks)
 
             with torch_device_module.stream(self.offload_manager_single.compute_stream):
-                encoder_hidden_states, hidden_states = self.infer_single_stream_block(
+                encoder_hidden_states, hidden_states = self.run_block(
+                    ("single", block_idx),
                     self.offload_manager_single.cuda_buffers[0],
+                    "single",
                     hidden_states,
                     encoder_hidden_states,
                     temb,

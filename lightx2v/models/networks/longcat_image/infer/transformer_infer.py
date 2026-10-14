@@ -12,6 +12,7 @@ class LongCatImageTransformerInfer(BaseTransformerInfer):
 
     def __init__(self, config):
         self.config = config
+        self.init_compile(config)
         self.infer_conditional = True
         self.clean_cuda_cache = self.config.get("clean_cuda_cache", False)
         self.infer_func = self.infer_without_offload
@@ -36,6 +37,13 @@ class LongCatImageTransformerInfer(BaseTransformerInfer):
 
     def set_scheduler(self, scheduler):
         self.scheduler = scheduler
+
+    def infer_block(self, block_weights, block_kind, *args):
+        if block_kind == "double":
+            return self.infer_double_stream_block(block_weights, *args)
+        if block_kind == "single":
+            return self.infer_single_stream_block(block_weights, *args)
+        raise ValueError(f"Unknown LongCat block kind: {block_kind}")
 
     def _ada_layer_norm_zero(self, hidden_states, temb, norm, norm_linear):
         """AdaLayerNormZero: compute shift, scale, gate from temb.
@@ -352,9 +360,11 @@ class LongCatImageTransformerInfer(BaseTransformerInfer):
             hidden_states = torch.cat([hidden_states, pre_infer_out.input_image_latents], dim=0)
 
         # Process double-stream blocks
-        for block in block_weights.double_blocks:
-            encoder_hidden_states, hidden_states = self.infer_double_stream_block(
+        for block_idx, block in enumerate(block_weights.double_blocks):
+            encoder_hidden_states, hidden_states = self.run_block(
+                ("double", block_idx),
                 block,
+                "double",
                 hidden_states,
                 encoder_hidden_states,
                 temb,
@@ -363,9 +373,11 @@ class LongCatImageTransformerInfer(BaseTransformerInfer):
             )
 
         # Process single-stream blocks
-        for block in block_weights.single_blocks:
-            encoder_hidden_states, hidden_states = self.infer_single_stream_block(
+        for block_idx, block in enumerate(block_weights.single_blocks):
+            encoder_hidden_states, hidden_states = self.run_block(
+                ("single", block_idx),
                 block,
+                "single",
                 hidden_states,
                 encoder_hidden_states,
                 temb,

@@ -14,9 +14,10 @@ from lightx2v.models.schedulers.longcat_image.scheduler import LongCatImageSched
 from lightx2v.models.video_encoders.hf.longcat_image.vae import LongCatImageVAE
 from lightx2v.server.metrics import monitor_cli
 from lightx2v.utils.envs import *
+from lightx2v.utils.input_info import T2IInputInfo
 from lightx2v.utils.profiler import *
 from lightx2v.utils.registry_factory import RUNNER_REGISTER
-from lightx2v.utils.utils import is_main_process
+from lightx2v.utils.utils import is_main_process, seed_all
 from lightx2v_platform.base.global_var import AI_DEVICE
 
 try:
@@ -58,6 +59,38 @@ class LongCatImageRunner(DefaultRunner):
         "t2i": IMAGE_REQUEST_FIELDS,
         "i2i": COMMON_REQUEST_FIELDS | PROMPT_FIELDS | {"image_path"},
     }
+
+    @ProfilingContext4DebugL1("Warmup")
+    def run_warmup(self):
+        if self.config["task"] != "t2i":
+            raise NotImplementedError("LongCat-Image warmup currently supports t2i only")
+        if self.config.get("lazy_load", False) or self.config.get("unload_modules", False):
+            raise NotImplementedError("LongCat-Image warmup requires resident modules")
+
+        self.input_info = T2IInputInfo(
+            seed=self.config.get("warmup_seed", 0),
+            prompt=self.config.get("warmup_prompt", "warmup"),
+            negative_prompt=self.config.get("warmup_negative_prompt", " " if self.config["enable_cfg"] else ""),
+            size=list(self.config["size"]),
+            return_result_tensor=True,
+        )
+        try:
+            seed_all(self.input_info.seed)
+            self.inputs = self.run_input_encoder()
+            self.set_latent_shape()
+            self.model.scheduler.prepare(self.input_info)
+            latents, _ = self.run(total_steps=1)
+            self.run_vae_decoder(latents)
+            torch_device_module.synchronize()
+        finally:
+            self.model.pre_infer.clear_rope_cache()
+            self.model.scheduler.latents = None
+            self.model.scheduler.noise_pred = None
+            self.model.scheduler.generator = None
+            if self.config.get("cpu_offload", False) and self.config.get("offload_granularity") == "model":
+                self.model.to_cpu()
+            self.end_run()
+        logger.info("[Warmup] Warmup completed: LongCat-Image one-step inference and VAE decode")
 
     def load_transformer(self):
         model = LongCatImageTransformerModel(os.path.join(self.config["model_path"], "transformer"), self.config, self.init_device)
